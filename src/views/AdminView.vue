@@ -11,6 +11,28 @@
         <el-tag :type="state.source === 'mock' ? 'warning' : 'success'" effect="plain" class="num-ltr">
           {{ state.source === 'mock' ? $t('common.mockMode') : $t('common.pbMode') }}
         </el-tag>
+        <el-dropdown trigger="click" @command="onAccountCommand">
+          <button class="account-chip" type="button">
+            <el-avatar :size="26" class="account-avatar">{{ accountInitial }}</el-avatar>
+            <span class="account-copy">
+              <strong>{{ accountDisplayName }}</strong>
+              <small>{{ accountRoleLabel }}</small>
+            </span>
+            <el-icon class="account-caret"><ArrowDown /></el-icon>
+          </button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="password">
+                <el-icon><Key /></el-icon>
+                {{ $t('auth.changePassword') }}
+              </el-dropdown-item>
+              <el-dropdown-item command="logout" divided>
+                <el-icon><SwitchButton /></el-icon>
+                {{ $t('auth.logout') }}
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
         <el-button @click="$router.push('/portal')">{{ $t('common.backPortal') }}</el-button>
         <el-button type="primary" @click="previewVisible = true">
           <el-icon><View /></el-icon>
@@ -27,6 +49,23 @@
 
     <div class="section-shell admin-content">
       <el-tabs v-model="activeTab" class="admin-tabs">
+        <el-tab-pane :label="$t('admin.tabSections')" name="sections">
+          <div class="soft-panel panel-pad">
+            <SectionOrderEditor
+              :order="sectionsDraft.order"
+              :hidden="sectionsDraft.hidden"
+              @update:order="(value) => (sectionsDraft.order = value)"
+              @update:hidden="(value) => (sectionsDraft.hidden = value)"
+              @reset="resetSections"
+            />
+            <div class="save-row">
+              <el-button type="primary" :loading="saving" @click="saveSections">
+                {{ $t('admin.saveSections') }}
+              </el-button>
+            </div>
+          </div>
+        </el-tab-pane>
+
         <el-tab-pane :label="$t('admin.tabLayout')" name="layout">
           <div v-if="layoutReady" class="layout-editor">
             <section v-for="section in layoutSections" :key="section.key" class="layout-section soft-panel">
@@ -112,6 +151,10 @@
           </el-table>
           <el-empty v-if="!rows[config.type].length" :description="$t('common.noData')" />
         </el-tab-pane>
+
+        <el-tab-pane v-if="isAdmin" :label="$t('admin.tabUsers')" name="users">
+          <UserManager />
+        </el-tab-pane>
       </el-tabs>
     </div>
 
@@ -161,6 +204,37 @@
       </template>
     </el-dialog>
 
+    <el-dialog
+      v-model="passwordDialog.visible"
+      :title="$t('auth.changePassword')"
+      width="min(460px, 94vw)"
+      destroy-on-close
+    >
+      <el-form
+        ref="passwordFormRef"
+        :model="passwordDialog.form"
+        :rules="passwordRules"
+        label-position="top"
+      >
+        <el-form-item :label="$t('auth.currentPassword')" prop="current">
+          <el-input v-model="passwordDialog.form.current" type="password" show-password autocomplete="current-password" />
+        </el-form-item>
+        <el-form-item :label="$t('auth.newPassword')" prop="next">
+          <el-input v-model="passwordDialog.form.next" type="password" show-password autocomplete="new-password" />
+        </el-form-item>
+        <el-form-item :label="$t('auth.confirmPassword')" prop="confirm">
+          <el-input v-model="passwordDialog.form.confirm" type="password" show-password autocomplete="new-password" />
+        </el-form-item>
+      </el-form>
+      <p class="field-tip">{{ $t('admin.changePasswordHint') }}</p>
+      <template #footer>
+        <el-button @click="passwordDialog.visible = false">{{ $t('common.cancel') }}</el-button>
+        <el-button type="primary" :loading="passwordDialog.saving" @click="submitPassword">
+          {{ $t('common.save') }}
+        </el-button>
+      </template>
+    </el-dialog>
+
     <el-drawer v-model="previewVisible" :title="$t('admin.previewTitle')" size="min(960px, 95vw)">
       <div class="preview-toolbar">
         <span>{{ $t('admin.previewHint') }}</span>
@@ -176,24 +250,71 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { InfoFilled, Plus, View } from '@element-plus/icons-vue'
+import { ArrowDown, InfoFilled, Key, Plus, SwitchButton, View } from '@element-plus/icons-vue'
 import LanguageSwitcher from '@/components/common/LanguageSwitcher.vue'
+import SectionOrderEditor from '@/components/admin/SectionOrderEditor.vue'
+import UserManager from '@/components/admin/UserManager.vue'
 import { usePortalContent } from '@/stores/portalContent.js'
+import { useAccount } from '@/stores/account.js'
 import { SUPPORTED_LANGUAGES as LANG_OPTIONS, currentLang } from '@/locales/index.js'
 import { emptyLocalized, pickLocalized } from '@/utils/localized.js'
+import { PASSWORD_MIN_LENGTH } from '@/services/users.js'
+import { errorKey, errorParams } from '@/services/errors.js'
 import { PORTAL_KEY_PREFIX } from '@/mock/portalContent.js'
+import { PORTAL_LAYOUT_KEY, defaultPortalLayout, normalizePortalLayout } from '@/utils/layout.js'
 
 const { t } = useI18n()
+const router = useRouter()
 const { state, ensureLoaded, get, list, upsert, remove, reset } = usePortalContent()
+const { state: account, isAdmin, logout, changePassword } = useAccount()
 
-const activeTab = ref('layout')
+const activeTab = ref('sections')
 const layoutLang = ref('zh')
 const layoutReady = ref(false)
 const saving = ref(false)
 const previewVisible = ref(false)
 const previewKey = ref(0)
+const passwordFormRef = ref(null)
+
+const sectionsDraft = reactive({ order: [...defaultPortalLayout().order], hidden: [] })
+
+const passwordDialog = reactive({
+  visible: false,
+  saving: false,
+  form: { current: '', next: '', confirm: '' }
+})
+
+const accountDisplayName = computed(() => account.session?.displayName || account.session?.username || '')
+const accountInitial = computed(() => String(accountDisplayName.value).trim().charAt(0).toUpperCase() || '?')
+const accountRoleLabel = computed(() =>
+  account.session?.role === 'admin' ? t('auth.roleAdmin') : t('auth.roleEditor')
+)
+
+const passwordRules = computed(() => ({
+  current: [{ required: true, message: t('auth.passwordRequired'), trigger: 'blur' }],
+  next: [
+    {
+      validator: (_rule, value, callback) => {
+        if (String(value || '').length < PASSWORD_MIN_LENGTH) {
+          callback(new Error(t('auth.passwordTooShort', { min: PASSWORD_MIN_LENGTH })))
+        } else callback()
+      },
+      trigger: 'blur'
+    }
+  ],
+  confirm: [
+    {
+      validator: (_rule, value, callback) => {
+        if (value !== passwordDialog.form.next) callback(new Error(t('auth.passwordMismatch')))
+        else callback()
+      },
+      trigger: 'blur'
+    }
+  ]
+}))
 
 const layoutSections = [
   {
@@ -318,6 +439,33 @@ function plainFields(section) {
   return section.fields.filter((field) => field.plain)
 }
 
+function loadSections() {
+  const layout = normalizePortalLayout(get(PORTAL_LAYOUT_KEY))
+  sectionsDraft.order = [...layout.order]
+  sectionsDraft.hidden = [...layout.hidden]
+}
+
+function resetSections() {
+  const fallback = defaultPortalLayout()
+  sectionsDraft.order = [...fallback.order]
+  sectionsDraft.hidden = []
+}
+
+async function saveSections() {
+  saving.value = true
+  try {
+    await upsert(PORTAL_LAYOUT_KEY, {
+      order: [...sectionsDraft.order],
+      hidden: [...sectionsDraft.hidden],
+      updatedAt: new Date().toISOString()
+    })
+    ElMessage.success(t('admin.sectionsSaved'))
+    refreshPreview()
+  } finally {
+    saving.value = false
+  }
+}
+
 function loadLayout() {
   for (const section of layoutSections) {
     const value = get(section.key)
@@ -422,6 +570,7 @@ async function resetAll() {
   })
   await reset()
   loadLayout()
+  loadSections()
   ElMessage.success(t('admin.resetDone'))
   refreshPreview()
 }
@@ -434,8 +583,37 @@ function openPortal() {
   window.open('/#/portal', '_blank', 'noopener')
 }
 
+function onAccountCommand(command) {
+  if (command === 'password') {
+    passwordDialog.form = { current: '', next: '', confirm: '' }
+    passwordDialog.visible = true
+    return
+  }
+  if (command === 'logout') {
+    logout()
+    ElMessage.success(t('auth.logoutDone'))
+    router.replace('/login')
+  }
+}
+
+async function submitPassword() {
+  const valid = await passwordFormRef.value?.validate().catch(() => false)
+  if (!valid) return
+  passwordDialog.saving = true
+  try {
+    await changePassword(passwordDialog.form.current, passwordDialog.form.next)
+    ElMessage.success(t('auth.passwordChanged'))
+    passwordDialog.visible = false
+  } catch (error) {
+    ElMessage.error(t(errorKey(error), errorParams(error)))
+  } finally {
+    passwordDialog.saving = false
+  }
+}
+
 onMounted(async () => {
   await ensureLoaded()
+  loadSections()
   loadLayout()
 })
 </script>
@@ -446,9 +624,29 @@ onMounted(async () => {
 .header-copy h1 { margin: 10px 0 6px; font-size: clamp(26px, 3vw, 36px); }
 .header-copy p { margin: 0; color: var(--portal-muted); font-size: 14px; }
 .header-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+
+.account-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px 4px 4px;
+  border: 1px solid var(--portal-border);
+  border-radius: 999px;
+  background: var(--portal-canvas);
+  color: var(--portal-text);
+  cursor: pointer;
+}
+.account-chip:hover { border-color: var(--portal-primary); }
+.account-avatar { background: var(--portal-primary-soft); color: var(--portal-primary); font-size: 12px; }
+.account-copy { display: flex; flex-direction: column; line-height: 1.2; text-align: start; }
+.account-copy strong { font-size: 12px; }
+.account-copy small { color: var(--portal-muted); font-size: 10px; }
+.account-caret { color: var(--portal-muted); font-size: 12px; }
+
 .admin-tip { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; padding: 12px 16px; border-radius: 8px; background: var(--portal-primary-soft); color: var(--portal-primary); font-size: 13px; }
 .tip-error { margin-inline-start: auto; color: #b44; }
 .admin-content { padding: 24px; border: 1px solid var(--portal-border); border-radius: var(--portal-radius); background: var(--portal-canvas); }
+.panel-pad { padding: 22px; }
 .layout-editor { display: flex; flex-direction: column; gap: 20px; }
 .layout-section { padding: 22px; }
 .section-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
@@ -456,7 +654,7 @@ onMounted(async () => {
 .section-heading span { color: var(--portal-muted); font-size: 11px; }
 .field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .lang-tabs { margin-top: 10px; }
-.save-row { display: flex; justify-content: flex-end; }
+.save-row { display: flex; justify-content: flex-end; margin-top: 18px; }
 .list-toolbar { display: flex; gap: 10px; margin-bottom: 16px; }
 .content-table { width: 100%; }
 .cell-title { font-weight: 600; }
@@ -464,6 +662,7 @@ onMounted(async () => {
 .preview-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; color: var(--portal-muted); font-size: 12px; }
 .preview-toolbar > div { display: flex; gap: 8px; }
 .preview-frame { width: 100%; height: calc(100vh - 150px); border: 1px solid var(--portal-border); border-radius: 8px; background: #fff; }
+.field-tip { margin: 6px 0 0; color: var(--portal-muted); font-size: 11px; line-height: 1.6; }
 
 @media (max-width: 900px) {
   .admin-header { flex-direction: column; align-items: flex-start; }

@@ -1,3 +1,5 @@
+import { PORTAL_SECTION_IDS } from '@/utils/layout.js'
+
 const t = (zh, en, ar, ckb) => ({ zh, en, ar, ckb })
 
 export const PORTAL_KEY_PREFIX = 'rcm_portal_'
@@ -222,6 +224,14 @@ export const portalSeedRecords = [
       title: t('代理网点应用', 'Agent outlet app', 'تطبيق وكلاء التموين', 'ئەپی بنکەکانی تەدارکات'),
       description: t('现场扫码核销、身份核验与发放记账。', 'On-site QR verification, identity checks and distribution records.', 'المسح والتحقق من الهوية وتسجيل التوزيع في الموقع.', 'سکاکردن و پشتڕاستکردنەوەی ناسنامە و تۆماری دابەشکردن لە شوێنەکە.'),
       href: '#/portal'
+    }
+  },
+  {
+    key: 'rcm_portal_layout_v1',
+    value: {
+      order: [...PORTAL_SECTION_IDS],
+      hidden: [],
+      updatedAt: '2026-11-16T00:00:00.000Z'
     }
   }
 ]

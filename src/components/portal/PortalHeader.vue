@@ -67,20 +67,26 @@ import LanguageSwitcher from '@/components/common/LanguageSwitcher.vue'
 import { usePortalContent } from '@/stores/portalContent.js'
 import { currentLang } from '@/locales/index.js'
 import { pickLocalized } from '@/utils/localized.js'
+import {
+  PORTAL_LAYOUT_KEY,
+  PORTAL_NAV_SECTION_IDS,
+  SECTION_LABEL_KEYS,
+  normalizePortalLayout,
+  visibleSectionIds
+} from '@/utils/layout.js'
 
 const { ensureLoaded, get } = usePortalContent()
 const menuOpen = ref(false)
 const activeSection = ref('home')
 const isDark = ref(localStorage.getItem('rcm_portal_theme') === 'dark')
 
-const navItems = [
-  { id: 'home', label: 'nav.home' },
-  { id: 'news', label: 'nav.news' },
-  { id: 'videos', label: 'nav.videos' },
-  { id: 'guide', label: 'nav.guide' },
-  { id: 'faq', label: 'nav.faq' },
-  { id: 'apps', label: 'nav.apps' }
-]
+/** 导航项跟随后台页面布局：顺序一致，隐藏的区块不出现。 */
+const navItems = computed(() => {
+  const layout = normalizePortalLayout(get(PORTAL_LAYOUT_KEY))
+  return visibleSectionIds(layout)
+    .filter((sectionId) => PORTAL_NAV_SECTION_IDS.includes(sectionId))
+    .map((sectionId) => ({ id: sectionId, label: SECTION_LABEL_KEYS[sectionId] }))
+})
 
 const site = computed(() => get('rcm_portal_site_v1'))
 const brand = computed(() => pickLocalized(site.value.brand, currentLang.value))
